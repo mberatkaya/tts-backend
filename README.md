@@ -1,83 +1,59 @@
 # TTS Backend Foundation
 
-This repository contains the first backend foundation for a secure Text-to-SQL system built with ASP.NET Core Web API on .NET 8. The goal of this phase is to establish the architecture, contracts, and security boundaries for future work, not to ship a full production implementation yet.
+This repository contains the backend foundation for a secure Text-to-SQL system built with ASP.NET Core Web API on .NET 8. The current goal is to keep the backend small, modular, and ready for the next implementation phase without adding authentication, frontend work, or real LLM integration yet.
 
 ## Architecture
 
-The solution uses a layered architecture with clear boundaries:
+The backend is split into four layers:
 
-- `src/TTS.Api`
-  - HTTP entry point
-  - controllers
+- `src/Api`
+  - controller endpoint
   - request and response DTOs
+  - API-specific DI registration
   - global exception middleware
-  - configuration host setup
-- `src/TTS.Application`
-  - use-case orchestration
-  - service interfaces
-  - validators
-  - SQL builder abstraction
-  - role-based policy placeholder
-  - options and DI registration
-- `src/TTS.Domain`
+- `src/Application`
+  - orchestration service
+  - interfaces
+  - question validation
+  - SQL builder abstractions
+  - policy placeholders
+- `src/Domain`
+  - AI plan models
   - schema metadata models
-  - AI query plan contract
   - validation and execution result models
-  - text-to-sql response model
-- `src/TTS.Infrastructure`
+- `src/Infrastructure`
   - fake AI query planner
-  - configuration-backed schema metadata provider
+  - fake schema metadata provider
   - SQL safety validator
   - SQL execution layer
   - result formatter
-  - infrastructure options and DI registration
+  - infrastructure registration
+
+### Architecture Notes
+
+- The AI planner only receives the user question and sanitized schema metadata.
+- The backend is the only layer allowed to validate and execute SQL.
+- SQL execution remains behind `ISqlQueryExecutor` so the database boundary stays explicit.
+- The current validator is string-based by design, but it now has clearer extension points for a parser-based validator later.
+- Schema metadata is sanitized before it reaches the planner, which keeps blocked or sensitive columns out of the AI context.
 
 ## Request Flow
 
-The current request flow is:
-
 `POST /api/text-to-sql/query`
--> controller receives `question`
+-> `TextToSqlController`
 -> `ITextToSqlService`
--> `ISchemaMetadataProvider` returns sanitized allowed schema metadata
--> `IAiQueryPlanner` receives only the question and allowed schema metadata
+-> `ISchemaMetadataProvider`
+-> `IAiQueryPlanner`
 -> role-based SQL policy placeholder
--> `ISqlSafetyValidator` validates and normalizes SQL
--> `ISqlQueryExecutor` executes SQL only when execution is enabled
--> `IResultFormatter` prepares the result payload
--> response DTO returned to the client
+-> `ISqlSafetyValidator`
+-> `ISqlQueryExecutor`
+-> `IResultFormatter`
+-> response DTO
 
-Important boundary:
+## Implemented Foundation
 
-- The AI planner never receives a SQL connection or direct database access.
-- The backend is the only layer allowed to validate and execute SQL.
-- SQL execution is disabled by default in configuration for this foundation phase.
-
-## Implemented In This Phase
-
-- Layered solution with `Api`, `Application`, `Domain`, and `Infrastructure` projects
-- One controller endpoint: `POST /api/text-to-sql/query`
-- Request DTO:
-
-```json
-{
-  "question": "string"
-}
-```
-
-- Response DTO:
-
-```json
-{
-  "success": true,
-  "question": "string",
-  "generatedSql": "string",
-  "rows": [],
-  "warnings": [],
-  "confidence": 0.0
-}
-```
-
+- One endpoint: `POST /api/text-to-sql/query`
+- Clean DTOs for request, response, and API errors
 - Required abstractions:
   - `ITextToSqlService`
   - `IAiQueryPlanner`
@@ -85,55 +61,75 @@ Important boundary:
   - `ISqlSafetyValidator`
   - `ISqlQueryExecutor`
   - `IResultFormatter`
-- Strict AI output contract through `AiQueryPlan`
-- Sanitized schema metadata models:
-  - `AllowedSchemaMetadata`
-  - `TableMetadata`
-  - `ColumnMetadata`
-  - `RelationshipMetadata`
-- Security foundation:
-  - only `SELECT` allowed
-  - blocks `UPDATE`, `DELETE`, `INSERT`, `DROP`, `ALTER`, `TRUNCATE`, `EXEC`, `MERGE`, `INTO`
-  - rejects semicolon-separated statements
-  - rejects comments
-  - enforces a maximum row limit
-  - prepares table whitelist checks
-  - prepares sensitive column blocking
-  - includes a role-based filtering placeholder
-- SQL execution skeleton using `Microsoft.Data.SqlClient`
-- Fake AI planner for safe local development
-- Global exception middleware with consistent API error responses
-- Strongly typed configuration for:
+- Fake AI planner for local development
+- Fake schema metadata provider with:
+  - configured metadata support
+  - built-in sample schema fallback
+  - blocked and sensitive column filtering
+- SQL safety validator with:
+  - `SELECT`-only enforcement
+  - forbidden keyword checks
+  - semicolon rejection
+  - comment rejection
+  - allowed-table validation
+  - allowed-column validation
+  - wildcard projection control
+  - max-row enforcement through `TOP`
+- Global exception handling middleware
+- DI registration through extension methods in `Api`, `Application`, and `Infrastructure`
+- Strongly typed options for:
   - `ConnectionStrings`
   - `TextToSql`
   - `AiProvider`
   - `QuerySafety`
+
+## Configuration
+
+Sample configuration lives in [src/Api/appsettings.json](./src/Api/appsettings.json).
+
+Important sections:
+
+- `ConnectionStrings`
+  - placeholder SQL Server connection string for the future read-only login
+- `TextToSql`
+  - execution toggle
+  - sample schema toggle
+  - default schema
+  - allowed tables and relationships
+- `AiProvider`
+  - fake provider settings plus placeholders for a future real provider
+- `QuerySafety`
+  - row limit
+  - comment rejection
+  - wildcard projection control
+  - table whitelist switch
+  - column whitelist switch
+  - blocked columns
 
 ## Running
 
 1. Restore packages:
 
 ```bash
-dotnet restore
+dotnet restore Backend.sln
 ```
 
 2. Run the API:
 
 ```bash
-dotnet run --project src/TTS.Api
+dotnet run --project src/Api
 ```
 
-3. Send a sample request with the included `.http` file or a client such as `curl`.
+3. Send a request to `POST /api/text-to-sql/query`.
 
-By default, the fake planner will return a demo SQL query and the executor will skip the database call because `TextToSql:EnableQueryExecution` is set to `false`.
+By default, query execution is disabled, so the API runs planning and validation but does not call SQL Server.
 
-## What Is Intentionally Left For The Next Phase
+## Next-Phase TODOs
 
-- real LLM provider integration
-- parser-based SQL validation
-- richer SQL generation from structured plans instead of demo SQL strings
-- authenticated caller identity and role-aware filters
-- auditing and query history
-- prompt engineering and guardrail tuning
-- schema discovery from a real database
-- production-ready read-only database credentials and operational hardening
+- replace the fake planner with a real LLM-backed planner
+- move from regex-based validation to parser-based SQL validation
+- generate SQL from structured plan objects instead of only consuming demo SQL strings
+- connect schema metadata to controlled database introspection
+- add authenticated caller context and real role-based row filtering
+- add tests around validator edge cases and service orchestration
+- harden operational concerns such as audit logging, rate limits, and observability

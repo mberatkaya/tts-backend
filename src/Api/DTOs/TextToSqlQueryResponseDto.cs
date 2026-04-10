@@ -1,6 +1,6 @@
 namespace TTS.Api.DTOs;
 
-public sealed class TextToSqlQueryResponseDto
+public sealed record TextToSqlQueryResponseDto
 {
     public bool Success { get; init; }
 

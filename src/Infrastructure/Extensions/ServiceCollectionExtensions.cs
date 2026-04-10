@@ -15,13 +15,26 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddInfrastructureServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInfrastructureOptions(configuration);
+        services.AddTextToSqlInfrastructure();
+
+        return services;
+    }
+
+    public static IServiceCollection AddInfrastructureOptions(this IServiceCollection services, IConfiguration configuration)
+    {
         services.Configure<TextToSqlOptions>(configuration.GetSection(TextToSqlOptions.SectionName));
         services.Configure<AiProviderOptions>(configuration.GetSection(AiProviderOptions.SectionName));
         services.Configure<QuerySafetyOptions>(configuration.GetSection(QuerySafetyOptions.SectionName));
         services.Configure<SqlConnectionOptions>(configuration.GetSection(SqlConnectionOptions.SectionName));
 
+        return services;
+    }
+
+    public static IServiceCollection AddTextToSqlInfrastructure(this IServiceCollection services)
+    {
         services.AddScoped<IAiQueryPlanner, FakeAiQueryPlanner>();
-        services.AddSingleton<ISchemaMetadataProvider, ConfiguredSchemaMetadataProvider>();
+        services.AddSingleton<ISchemaMetadataProvider, FakeSchemaMetadataProvider>();
         services.AddSingleton<ISqlSafetyValidator, SqlSafetyValidator>();
         services.AddScoped<ISqlQueryExecutor, SqlQueryExecutor>();
         services.AddSingleton<IResultFormatter, JsonResultFormatter>();

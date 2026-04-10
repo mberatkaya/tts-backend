@@ -8,6 +8,10 @@ public sealed class TextToSqlOptions
 
     public bool EnableQueryExecution { get; set; }
 
+    public bool UseSampleSchemaMetadata { get; set; } = true;
+
+    public string DefaultSchema { get; set; } = "dbo";
+
     public int CommandTimeoutSeconds { get; set; } = 30;
 
     public int MaxQuestionLength { get; set; } = 500;

@@ -9,4 +9,8 @@ public sealed class AiProviderOptions
     public string ModelName { get; set; } = "mock-text-to-sql-planner";
 
     public bool UseMock { get; set; } = true;
+
+    public string Endpoint { get; set; } = string.Empty;
+
+    public string ApiKey { get; set; } = string.Empty;
 }

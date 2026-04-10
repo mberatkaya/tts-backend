@@ -49,6 +49,7 @@ public sealed class SqlSafetyValidator : ISqlSafetyValidator
         }
 
         var normalizedSql = SqlInspectionGuard.Normalize(sql);
+        var tableReferences = SqlInspectionGuard.ExtractTableReferences(normalizedSql);
 
         if (!SqlInspectionGuard.StartsWithSelect(normalizedSql))
         {
@@ -75,7 +76,12 @@ public sealed class SqlSafetyValidator : ISqlSafetyValidator
 
         if (_options.AllowedTableWhitelistEnabled)
         {
-            ValidateTables(normalizedSql, allowedSchemaMetadata, errors);
+            ValidateTables(tableReferences, allowedSchemaMetadata, errors);
+        }
+
+        if (_options.AllowedColumnWhitelistEnabled && errors.Count == 0)
+        {
+            ValidateColumns(normalizedSql, allowedSchemaMetadata, tableReferences, errors);
         }
 
         if (_options.BlockedColumns.Count > 0 && SqlInspectionGuard.ContainsBlockedColumnReference(normalizedSql, _options.BlockedColumns))
@@ -96,32 +102,60 @@ public sealed class SqlSafetyValidator : ISqlSafetyValidator
         };
     }
 
-    private void ValidateTables(string sql, AllowedSchemaMetadata allowedSchemaMetadata, List<string> errors)
+    private void ValidateTables(IReadOnlyCollection<SqlTableReference> tableReferences, AllowedSchemaMetadata allowedSchemaMetadata, List<string> errors)
     {
-        var allowedTables = allowedSchemaMetadata.Tables
-            .SelectMany(table => new[]
+        if (tableReferences.Count == 0)
+        {
+            errors.Add("Query must reference at least one allowed table.");
+            return;
+        }
+
+        var allowedTableLookup = BuildAllowedTableLookup(allowedSchemaMetadata);
+
+        foreach (var tableReference in tableReferences)
+        {
+            if (TryResolveTable(tableReference.Table, allowedTableLookup, out _))
             {
-                table.Name,
-                $"{table.Schema}.{table.Name}"
-            })
+                continue;
+            }
+
+            errors.Add($"Query references a table outside the allowed schema: {tableReference.Table}.");
+        }
+    }
+
+    private void ValidateColumns(
+        string sql,
+        AllowedSchemaMetadata allowedSchemaMetadata,
+        IReadOnlyCollection<SqlTableReference> tableReferences,
+        List<string> errors)
+    {
+        if (!_options.AllowSelectStar && SqlInspectionGuard.ContainsSelectWildcard(sql))
+        {
+            errors.Add("SELECT * projections are not allowed.");
+        }
+
+        var allowedTableLookup = BuildAllowedTableLookup(allowedSchemaMetadata);
+        var referencedTables = tableReferences
+            .Select(reference => TryResolveTable(reference.Table, allowedTableLookup, out var table) ? table : null)
+            .Where(table => table is not null)
+            .Cast<TableMetadata>()
+            .DistinctBy(table => $"{table.Schema}.{table.Name}", StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (referencedTables.Count == 0)
+        {
+            return;
+        }
+
+        var tableAliasLookup = BuildTableAliasLookup(tableReferences, allowedTableLookup);
+        var selectExpressions = SqlInspectionGuard.ExtractSelectExpressions(sql);
+        var projectionAliases = SqlInspectionGuard.ExtractProjectionAliases(selectExpressions)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var referencedTable in SqlInspectionGuard.ExtractReferencedTables(sql))
-        {
-            if (allowedTables.Contains(referencedTable))
-            {
-                continue;
-            }
-
-            var shortName = referencedTable.Split('.', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
-
-            if (!string.IsNullOrWhiteSpace(shortName) && allowedTables.Contains(shortName))
-            {
-                continue;
-            }
-
-            errors.Add($"Query references a table outside the allowed schema: {referencedTable}.");
-        }
+        ValidateColumnExpressions(selectExpressions, referencedTables, tableAliasLookup, projectionAliases, allowProjectionAliases: false, errors);
+        ValidateColumnExpressions(SqlInspectionGuard.ExtractPredicateExpressions(sql), referencedTables, tableAliasLookup, projectionAliases, allowProjectionAliases: false, errors);
+        ValidateColumnExpressions(SqlInspectionGuard.ExtractGroupByExpressions(sql), referencedTables, tableAliasLookup, projectionAliases, allowProjectionAliases: false, errors);
+        ValidateColumnExpressions(SqlInspectionGuard.ExtractOrderByExpressions(sql), referencedTables, tableAliasLookup, projectionAliases, allowProjectionAliases: true, errors);
     }
 
     private string EnforceTopClause(string sql, List<string> errors)
@@ -145,5 +179,124 @@ public sealed class SqlSafetyValidator : ISqlSafetyValidator
         }
 
         return sql;
+    }
+
+    private static Dictionary<string, TableMetadata> BuildAllowedTableLookup(AllowedSchemaMetadata allowedSchemaMetadata)
+    {
+        return allowedSchemaMetadata.Tables
+            .SelectMany(table => new[]
+            {
+                new KeyValuePair<string, TableMetadata>($"{table.Schema}.{table.Name}", table),
+                new KeyValuePair<string, TableMetadata>(table.Name, table)
+            })
+            .GroupBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, TableMetadata> BuildTableAliasLookup(
+        IReadOnlyCollection<SqlTableReference> tableReferences,
+        IReadOnlyDictionary<string, TableMetadata> allowedTableLookup)
+    {
+        var lookup = new Dictionary<string, TableMetadata>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var tableReference in tableReferences)
+        {
+            if (!TryResolveTable(tableReference.Table, allowedTableLookup, out var table))
+            {
+                continue;
+            }
+
+            lookup[table.Name] = table;
+            lookup[$"{table.Schema}.{table.Name}"] = table;
+
+            if (!string.IsNullOrWhiteSpace(tableReference.Alias))
+            {
+                lookup[tableReference.Alias] = table;
+            }
+        }
+
+        return lookup;
+    }
+
+    private static bool TryResolveTable(
+        string source,
+        IReadOnlyDictionary<string, TableMetadata> allowedTableLookup,
+        out TableMetadata table)
+    {
+        var normalizedSource = SqlInspectionGuard.NormalizeIdentifier(source);
+
+        if (allowedTableLookup.TryGetValue(normalizedSource, out table!))
+        {
+            return true;
+        }
+
+        var shortName = normalizedSource.Split('.', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+        return !string.IsNullOrWhiteSpace(shortName) && allowedTableLookup.TryGetValue(shortName, out table!);
+    }
+
+    private static void ValidateColumnExpressions(
+        IReadOnlyCollection<string> expressions,
+        IReadOnlyCollection<TableMetadata> referencedTables,
+        IReadOnlyDictionary<string, TableMetadata> tableAliasLookup,
+        IReadOnlySet<string> projectionAliases,
+        bool allowProjectionAliases,
+        List<string> errors)
+    {
+        var seenErrors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var expression in expressions)
+        {
+            foreach (var columnReference in SqlInspectionGuard.ExtractColumnReferences(expression))
+            {
+                if (allowProjectionAliases &&
+                    string.IsNullOrWhiteSpace(columnReference.Source) &&
+                    projectionAliases.Contains(columnReference.Column))
+                {
+                    continue;
+                }
+
+                var validationError = ValidateColumnReference(columnReference, referencedTables, tableAliasLookup);
+                if (validationError is null || !seenErrors.Add(validationError))
+                {
+                    continue;
+                }
+
+                errors.Add(validationError);
+            }
+        }
+    }
+
+    private static string? ValidateColumnReference(
+        SqlColumnReference columnReference,
+        IReadOnlyCollection<TableMetadata> referencedTables,
+        IReadOnlyDictionary<string, TableMetadata> tableAliasLookup)
+    {
+        if (!string.IsNullOrWhiteSpace(columnReference.Source))
+        {
+            if (!tableAliasLookup.TryGetValue(columnReference.Source, out var referencedTable))
+            {
+                return $"Column source is not allowed or cannot be resolved: {columnReference.Source}.";
+            }
+
+            return referencedTable.Columns.Any(column => string.Equals(column.Name, columnReference.Column, StringComparison.OrdinalIgnoreCase))
+                ? null
+                : $"Column is not allowed on table {referencedTable.Schema}.{referencedTable.Name}: {columnReference.Column}.";
+        }
+
+        var matchingTables = referencedTables
+            .Where(table => table.Columns.Any(column => string.Equals(column.Name, columnReference.Column, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (matchingTables.Count == 1)
+        {
+            return null;
+        }
+
+        if (matchingTables.Count > 1)
+        {
+            return $"Column must be qualified with a table or alias because it exists on multiple allowed tables: {columnReference.Column}.";
+        }
+
+        return $"Column is outside the allowed schema metadata: {columnReference.Column}.";
     }
 }

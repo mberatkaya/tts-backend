@@ -8,7 +8,11 @@ public sealed class QuerySafetyOptions
 
     public bool RejectComments { get; set; } = true;
 
+    public bool AllowSelectStar { get; set; }
+
     public bool AllowedTableWhitelistEnabled { get; set; } = true;
+
+    public bool AllowedColumnWhitelistEnabled { get; set; } = true;
 
     public bool EnableRoleBasedFilteringPlaceholder { get; set; } = true;
 

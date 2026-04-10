@@ -2,9 +2,10 @@ using System.ComponentModel.DataAnnotations;
 
 namespace TTS.Api.DTOs;
 
-public sealed class TextToSqlQueryRequestDto
+public sealed record TextToSqlQueryRequestDto
 {
-    [Required]
+    [Required(AllowEmptyStrings = false)]
+    [MinLength(3)]
     [MaxLength(500)]
-    public string Question { get; set; } = string.Empty;
+    public string Question { get; init; } = string.Empty;
 }
