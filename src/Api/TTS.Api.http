@@ -1,0 +1,8 @@
+@TTS.Api_HostAddress = https://localhost:7275
+
+POST {{TTS.Api_HostAddress}}/api/text-to-sql/query
+Content-Type: application/json
+
+{
+  "question": "List recent orders"
+}
